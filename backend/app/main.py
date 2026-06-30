@@ -5,13 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import auth, chat, documents
 from app.config import settings
 from app.database import init_db
-from app.seed import seed_demo_users # <--- Ye import add karein
+from app.seed import run_seed_all
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    # Auto-seed jab backend start ho
-    await seed_demo_users() 
+    # Backend start hote hi seed karein
+    await run_seed_all() 
     yield
 
 app = FastAPI(
