@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# Env
+.env
+
+# Storage / runtime data
+backend/storage/uploads/*
+!backend/storage/uploads/.gitkeep
+backend/storage/vector_index/*
+!backend/storage/vector_index/.gitkeep
+backend/storage/app.db
+
+# OS
+.DS_Store
