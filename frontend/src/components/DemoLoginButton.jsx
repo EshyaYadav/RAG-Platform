@@ -9,19 +9,17 @@ export default function DemoLoginButton({ role, onClick, loading }) {
     <button
       onClick={() => onClick(role)}
       disabled={loading}
-      className="w-full text-left px-5 py-4 rounded-xl border border-slate-200 bg-white
-                 hover:border-brand-400 hover:shadow-md transition-all duration-150
-                 disabled:opacity-50 disabled:cursor-not-allowed group"
+      className="group w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-5 py-4 text-left transition-all duration-150 hover:border-[var(--primary)] hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
     >
       <div className="flex items-center justify-between">
-        <span className="font-semibold text-slate-800 group-hover:text-brand-700">
+        <span className="font-semibold text-[var(--foreground)] group-hover:text-[var(--primary)]">
           Login as {role.charAt(0) + role.slice(1).toLowerCase()}
         </span>
-        <span className="text-brand-600 group-hover:translate-x-1 transition-transform">
+        <span className="text-[var(--primary)] transition-transform group-hover:translate-x-1">
           &rarr;
         </span>
       </div>
-      <p className="text-sm text-slate-500 mt-1">{ROLE_DESCRIPTIONS[role]}</p>
+      <p className="mt-1 text-sm text-[var(--muted-foreground)]">{ROLE_DESCRIPTIONS[role]}</p>
     </button>
   );
 }

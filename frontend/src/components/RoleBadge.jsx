@@ -1,14 +1,32 @@
 const ROLE_STYLES = {
-  ADMIN: "bg-rose-100 text-rose-700 border-rose-300",
-  HR: "bg-amber-100 text-amber-700 border-amber-300",
-  EMPLOYEE: "bg-blue-100 text-blue-700 border-blue-300",
+  ADMIN: {
+    backgroundColor: "rgba(202, 50, 20, 0.1)",
+    color: "var(--destructive)",
+    borderColor: "rgba(202, 50, 20, 0.35)",
+  },
+  HR: {
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
+    color: "var(--chart-4)",
+    borderColor: "rgba(245, 158, 11, 0.34)",
+  },
+  EMPLOYEE: {
+    backgroundColor: "rgba(59, 130, 246, 0.12)",
+    color: "var(--chart-2)",
+    borderColor: "rgba(59, 130, 246, 0.32)",
+  },
 };
 
 export default function RoleBadge({ role }) {
-  const style = ROLE_STYLES[role] || "bg-slate-100 text-slate-700 border-slate-300";
+  const style = ROLE_STYLES[role] || {
+    backgroundColor: "var(--muted)",
+    color: "var(--muted-foreground)",
+    borderColor: "var(--border)",
+  };
+
   return (
     <span
-      className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${style}`}
+      className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold"
+      style={style}
     >
       {role}
     </span>

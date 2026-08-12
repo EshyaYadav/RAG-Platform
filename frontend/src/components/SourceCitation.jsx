@@ -4,26 +4,26 @@ export default function SourceCitation({ source }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="border border-slate-200 rounded-lg bg-slate-50 overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--muted)]">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-slate-100 transition-colors"
+        className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-[var(--card)]"
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-slate-400 shrink-0">📄</span>
-          <span className="text-sm font-medium text-slate-700 truncate">
+        <div className="min-w-0 flex items-center gap-2">
+          <span className="shrink-0 text-[var(--muted-foreground)]">📄</span>
+          <span className="truncate text-sm font-medium text-[var(--foreground)]">
             {source.document_name}
           </span>
         </div>
-        <div className="flex items-center gap-2 shrink-0 ml-2">
-          <span className="text-xs text-slate-400">
+        <div className="ml-2 flex shrink-0 items-center gap-2">
+          <span className="text-xs text-[var(--muted-foreground)]">
             {(source.similarity_score * 100).toFixed(0)}% match
           </span>
-          <span className="text-slate-400 text-xs">{expanded ? "▲" : "▼"}</span>
+          <span className="text-xs text-[var(--muted-foreground)]">{expanded ? "▲" : "▼"}</span>
         </div>
       </button>
       {expanded && (
-        <div className="px-3 pb-3 pt-1 text-sm text-slate-600 border-t border-slate-200 bg-white">
+        <div className="border-t border-[var(--border)] bg-[var(--card)] px-3 pb-3 pt-1 text-sm text-[var(--foreground)]">
           {source.chunk_excerpt}
         </div>
       )}

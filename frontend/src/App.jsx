@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { setAuthToken } from "./api/client";
 import Login from "./pages/Login";
@@ -13,6 +13,11 @@ import Chat from "./pages/Chat";
 // issued by the backend.
 export default function App() {
   const [user, setUser] = useState(null); // { email, role, full_name }
+  const [theme, setTheme] = useState("light");
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+  }, [theme]);
 
   function handleLogin(authResponse) {
     setAuthToken(authResponse.access_token);
@@ -34,7 +39,7 @@ export default function App() {
 
   return (
     <Routes>
-      <Route element={<Dashboard user={user} onLogout={handleLogout} />}>
+      <Route element={<Dashboard user={user} onLogout={handleLogout} theme={theme} onToggleTheme={() => setTheme((prev) => (prev === "light" ? "dark" : "light"))} />}>
         <Route path="/chat" element={<Chat user={user} />} />
         <Route path="/upload" element={<Upload />} />
         <Route path="*" element={<Navigate to="/chat" replace />} />

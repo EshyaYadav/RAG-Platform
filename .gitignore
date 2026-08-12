@@ -20,3 +20,7 @@ backend/storage/app.db
 
 # OS
 .DS_Store
+.venv/ 
+node_modules/ 
+.env 
+.venv/ 
