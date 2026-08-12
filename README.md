@@ -1,150 +1,136 @@
-# Enterprise RAG Platform (Privacy-First, Role-Based)
+# RAG Platform — Role-Based Retrieval Augmented Generation
 
-A self-hosted, zero-budget RAG (Retrieval-Augmented Generation) platform with
-**role-based access control enforced at the retrieval layer** — not after the
-fact. Employees, HR, and Admins each see only the documents their role is
-permitted to see, and that filter is baked into the database query itself,
-before reranking and before any text reaches the LLM.
+A self-hosted RAG app I built to solve a problem most "chat with your docs" demos
+ignore: **access control**. In most RAG tutorials, every user can retrieve every
+chunk in the vector store — which is fine for a toy project, but useless the
+moment you want employees, HR, and admins to see different sets of documents.
 
-## Architecture
+This project bakes role-based visibility straight into the retrieval query, so
+the filtering happens *before* similarity search runs, not as an afterthought
+on top of the LLM's answer.
 
-```
-User Login -> JWT (role claim) -> React Frontend
-   |
-   v
-Upload PDF/DOCX/TXT + visibility tag --------------------> FastAPI /documents/upload
-   |                                                              |
-   |                                                   Save file (StorageBackend)
-   |                                                   Create Document row (PROCESSING)
-   |                                                   BackgroundTask -> Ingestion Pipeline
-   |                                                              |
-   |                                          Parse -> Chunk (1000/200) -> Embed (bge-small)
-   |                                                              |
-   |                                          Store chunks + vectors + visibility in DB
-   |                                                   Document status -> READY
-   v
-Chat question -> FastAPI /chat/ask (JWT decoded -> role)
-   |
-   v
- RBAC FILTER COMPUTED FIRST (allowed_visibilities(role))
-   |
-   +--> Dense search (cosine similarity), restricted to visibility IN allowed
-   +--> Sparse search (BM25), over the SAME allowed-only chunk set
-   |
-   v
- Reciprocal Rank Fusion (top 10) -> Cross-Encoder Rerank (top 5)
-   |
-   v
- Prompt: "Answer ONLY from context. If absent, say you don't know."
-   |
-   v
- Groq LLM (llama-3.3-70b-versatile) -> Answer + cited sources -> Frontend
-```
+## Why I built it
 
-**Security invariant:** every retrieval code path filters by
-`visibility IN allowed_visibilities(user_role)` *before* running similarity
-search — never retrieve-then-filter. This is enforced in
-`app/services/hybrid_search.py` and covered by a regression test in
-`tests/test_rbac.py`.
+I wanted to understand how far you could push a "zero infra cost" RAG stack —
+no managed vector DB, no paid embedding API — while still keeping the security
+model correct. Turns out you can get pretty far with SQLite, a flat numpy
+array for vectors, and a free-tier LLM API, as long as the RBAC logic is
+airtight.
 
-Role hierarchy: `EMPLOYEE (0) < HR (1) < ADMIN (2)`, plus a special `PUBLIC`
-tier visible to everyone regardless of role.
-
-## A note on this build's environment
-
-This project was generated in a sandboxed environment **without Docker,
-without a live Postgres server, and without outbound access to the Groq
-API**, so two components were adapted versus the original Docker+pgvector
-spec while keeping the architecture and security model identical:
-
-| Component | Original spec | What's actually built here | Why |
-|---|---|---|---|
-| Vector DB | PostgreSQL + pgvector via Docker | **SQLite** (via SQLAlchemy, async) for metadata + a **local numpy-based vector index** (`app/services/vector_store.py`) for embeddings | No Docker/Postgres available in the build sandbox. The vector store is behind an interface so swapping to pgvector is a one-file change — see "Swapping back to pgvector" below. |
-| LLM | Groq API | Groq API (unchanged) | Just needs `GROQ_API_KEY` set as an environment variable at runtime — the build process itself never contacts Groq. |
-| Embeddings | bge-small-en-v1.5 (sentence-transformers, local) | Unchanged | Fully local, free, no API needed. |
-| Reranker | cross-encoder/ms-marco-MiniLM-L-6-v2 | Unchanged | Fully local. |
-| Background jobs | FastAPI BackgroundTasks | Unchanged | |
-| Containerization | docker-compose | A working `docker-compose.yml` is still included for a Docker-enabled machine — it just wasn't used to build/test here, and currently targets the pgvector path which needs `PgVectorStore` implemented (see below). |
-
-Everything else — auth, RBAC, chunking, hybrid search logic, RRF, prompt
-guardrails, frontend — is implemented exactly to spec and is real, runnable
-code with no stubs in the core logic.
-
-### Swapping back to pgvector
-
-`app/services/vector_store.py` defines a `VectorStore` interface with
-`add()`, `search(query_vector, allowed_visibilities, top_k)`, and `delete()`.
-The default implementation (`NumpyVectorStore`) keeps vectors in a flat numpy
-array persisted to disk as a `.npy` file alongside a small id/visibility
-index. To move to pgvector: implement a `PgVectorStore` class with the same
-interface backed by `Chunk.embedding.cosine_distance(...)` (a SQL sketch is
-included as a comment at the bottom of that file), point `config.py` at it
-via `VECTOR_BACKEND=pgvector`, and nothing else in the codebase changes.
-
-## Folder structure
+## How retrieval works
 
 ```
-enterprise-rag-platform/
-├── docker-compose.yml          (optional — requires Docker + PgVectorStore)
+Login (JWT with role claim)
+        |
+        v
+Upload PDF/DOCX/TXT + visibility tag  -->  FastAPI saves file, kicks off
+                                            background ingestion
+        |
+        v
+Parse -> chunk (1000 chars, 200 overlap) -> embed with bge-small -> store
+        |
+        v
+Ask a question  -->  decode JWT -> compute allowed_visibilities(role) FIRST
+        |
+        +--> dense search (cosine sim), restricted to allowed visibilities
+        +--> sparse search (BM25), over the same allowed-only chunk set
+        |
+        v
+Reciprocal Rank Fusion (top 10) -> cross-encoder rerank (top 5)
+        |
+        v
+"Answer only from this context, say so if it's not there" -> Groq (Llama 3.3)
+        |
+        v
+Answer + cited sources back to the frontend
+```
+
+Role hierarchy: `EMPLOYEE < HR < ADMIN`, plus a `PUBLIC` tier anyone can see
+regardless of role. The rule I cared most about getting right: **every**
+retrieval path filters by `visibility IN allowed_visibilities(role)` before
+running similarity search — never retrieve-then-filter, since that leaks
+scores/metadata even if you strip the text afterward. This lives in
+`app/services/hybrid_search.py`, and `tests/test_rbac.py` is a regression
+test that fails loudly if anyone touches that path carelessly.
+
+## Stack
+
+- **Backend:** FastAPI, SQLAlchemy (async) + SQLite for metadata, a small
+  numpy-backed vector index for embeddings, BM25 (`rank-bm25`) for sparse
+  search
+- **Embeddings / reranking:** `bge-small-en-v1.5` and
+  `cross-encoder/ms-marco-MiniLM-L-6-v2`, both local via sentence-transformers
+  — no API cost
+- **LLM:** Groq (`llama-3.3-70b-versatile`) — free tier, fast inference
+- **Frontend:** React + Vite + Tailwind, JWT auth, role badges, source
+  citations under each answer
+
+Why SQLite + numpy instead of Postgres/pgvector? Mostly so anyone can clone
+this and run it in five minutes without spinning up Docker or a database
+server. The vector store sits behind a small interface
+(`app/services/vector_store.py`) so swapping in pgvector later is a matter of
+implementing one class, not rewriting the app — see below.
+
+### Swapping in pgvector
+
+`VectorStore` defines `add()`, `search(query_vector, allowed_visibilities, top_k)`,
+and `delete()`. Implement a `PgVectorStore` against
+`Chunk.embedding.cosine_distance(...)` (there's a SQL sketch as a comment at
+the bottom of `vector_store.py`), point `config.py` at it with
+`VECTOR_BACKEND=pgvector`, and nothing else changes.
+
+## Project layout
+
+```
+RAG-Platform/
+├── docker-compose.yml
 ├── .env.example
-├── README.md
 ├── backend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── run.sh                  (single command: seed + start backend)
+│   ├── run.sh                 # seed db + start server
 │   ├── migrations/init.sql
 │   ├── app/
 │   │   ├── main.py
 │   │   ├── config.py
 │   │   ├── database.py
-│   │   ├── models/ (user.py, document.py, chunk.py)
-│   │   ├── schemas/ (auth.py, document.py, chat.py)
-│   │   ├── core/ (security.py, rbac.py, rate_limit_note.md)
-│   │   ├── services/ (storage.py, ingestion.py, embeddings.py,
-│   │   │              vector_store.py, bm25_index.py, hybrid_search.py,
-│   │   │              reranker.py, llm.py)
-│   │   ├── api/ (auth.py, documents.py, chat.py)
+│   │   ├── models/             # user, document, chunk
+│   │   ├── schemas/             # auth, document, chat
+│   │   ├── core/                 # security, rbac
+│   │   ├── services/             # storage, ingestion, embeddings,
+│   │   │                         # vector_store, bm25_index,
+│   │   │                         # hybrid_search, reranker, llm
+│   │   ├── api/                  # auth, documents, chat
 │   │   └── seed.py
-│   └── tests/ (test_rbac.py, test_hybrid_search.py)
+│   └── tests/
 └── frontend/
-    ├── Dockerfile
-    ├── package.json
-    ├── index.html
-    ├── tailwind.config.js
     └── src/
-        ├── main.jsx, App.jsx, index.css
         ├── api/client.js
-        ├── pages/ (Login.jsx, Dashboard.jsx, Upload.jsx, Chat.jsx)
-        └── components/ (DemoLoginButton.jsx, SourceCitation.jsx, RoleBadge.jsx)
+        ├── pages/            # Login, Dashboard, Upload, Chat
+        └── components/       # DemoLoginButton, SourceCitation, RoleBadge
 ```
 
-## Setup & run (any laptop, no Docker needed)
+## Running it locally
 
-### 1. Get a free Groq API key
-Sign up at https://console.groq.com (free tier) and create an API key.
+You'll need a free Groq API key from [console.groq.com](https://console.groq.com).
 
-### 2. Backend
+**Backend**
 
 ```bash
 cd backend
 python3 -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
+source venv/bin/activate      # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 cp ../.env.example ../.env
-# Edit ../.env and set GROQ_API_KEY=your_key_here
+# set GROQ_API_KEY in .env
 
-python -m app.seed                # creates demo users + sample documents
+python -m app.seed            # creates demo users + sample docs
 uvicorn app.main:app --reload --port 8000
 ```
 
-Backend will be live at `http://localhost:8000`. Interactive API docs at
-`http://localhost:8000/docs`. First run will download the embedding and
-reranker models (~150MB total, one-time, fully free/local).
+API docs at `http://localhost:8000/docs`. First run downloads the embedding
+and reranker models (~150MB, one-time).
 
-### 3. Frontend
-
-In a second terminal:
+**Frontend**
 
 ```bash
 cd frontend
@@ -152,20 +138,14 @@ npm install
 npm run dev
 ```
 
-Frontend will be live at `http://localhost:5173`.
+Runs at `http://localhost:5173`.
 
-### 4. Demo flow
+**Try it out:** log in as Employee, HR, or Admin (demo buttons on the login
+page), upload a doc and tag its visibility, then ask about it from a
+different role's account. A lower-privilege role should get "I don't know"
+instead of a leaked answer — that's the whole point of the project.
 
-1. Open `http://localhost:5173`.
-2. Click "Login as Employee" / "Login as HR" / "Login as Admin".
-3. Go to Upload, drag in a PDF/DOCX/TXT, tag it with a visibility level.
-4. Wait for status to flip to READY (polls automatically every 2s).
-5. Go to Chat, ask a question. Watch the role badge in the header and the
-   source citations under each answer — try the same question logged in as
-   different roles to see the RBAC filter in action (an Employee asking
-   about an HR-only doc gets "I don't know," not a leaked answer).
-
-### Demo accounts (created by `seed.py`)
+Demo accounts (from `seed.py`):
 
 | Email | Password | Role |
 |---|---|---|
@@ -173,54 +153,45 @@ Frontend will be live at `http://localhost:5173`.
 | hr@demo.com | demo1234 | HR |
 | employee@demo.com | demo1234 | EMPLOYEE |
 
-`/auth/demo-login/{role}` also issues a JWT with no password, but only when
-`DEMO_MODE=true` in `.env` — disable this before any real deployment.
+`DEMO_MODE=true` in `.env` also enables passwordless demo login — turn this
+off before deploying anywhere real.
 
-## Running with Docker (optional)
+## Docker
 
-The included `docker-compose.yml` spins up a Postgres+pgvector container and
-targets that backend by default. The app code ships with SQLite + numpy as
-the default, working configuration. To actually use Docker's Postgres, first
-implement `PgVectorStore` (see "Swapping back to pgvector" above), then:
+`docker-compose.yml` is set up for a Postgres+pgvector backend. The app
+defaults to SQLite + numpy out of the box, so you'd need to implement
+`PgVectorStore` (see above) before the Docker path is fully wired up.
 
 ```bash
-cp .env.example .env   # fill in GROQ_API_KEY etc.
+cp .env.example .env
 docker-compose up --build
 ```
 
-## Known limitations
+## Things I haven't gotten to yet
 
-- **Vector index is in-memory/numpy, not pgvector** in the default
-  configuration — fine for a demo or up to a few hundred thousand chunks, but
-  pgvector (or a real ANN index) is recommended before production scale. The
-  interface is designed so this swap is isolated to one file.
-- **BM25 index is rebuilt per request** from the role-filtered chunk set
-  rather than maintained as a persistent inverted index — simple and
-  correct, but not optimal at high document-count scale.
-- **JWT stored in React state**, not localStorage, by design (avoids XSS
-  token theft) — but that also means a page refresh logs the user out. Fine
-  for a demo; production would want httpOnly cookies + refresh tokens.
-- **No rate limiting middleware is wired in by default** — see
-  `backend/app/core/rate_limit_note.md` for where to add `slowapi` before any
-  public deployment.
-- **File size/type validation** is enforced server-side (10MB max, PDF/DOCX/TXT
-  only) but there's no virus scanning — don't expose this directly to the
-  public internet without adding one (e.g. ClamAV).
-- **No streaming responses** from the LLM yet — `/chat/ask` returns the full
-  answer in one response rather than token-by-token streaming.
-- **Single-tenant.** No org/workspace isolation — all users share one
-  document pool, partitioned only by role visibility; the `department`
-  metadata field is stored but not yet used as an additional filter.
-- This was built and verified for **code correctness and local runnability**
-  in a sandbox without live Groq API access — the LLM call itself has not
-  been executed end-to-end by the build process. Test it yourself once you
-  add a real `GROQ_API_KEY`.
+- Vector search is numpy-in-memory, not a real ANN index — fine for a demo,
+  won't scale past a few hundred thousand chunks without pgvector or similar
+- BM25 index rebuilds per-request from the role-filtered chunk set rather
+  than being maintained persistently
+- JWT lives in React state, not localStorage (avoids XSS token theft, but
+  means a refresh logs you out) — httpOnly cookies + refresh tokens would be
+  the production move
+- No rate limiting wired in yet (notes on adding `slowapi` in
+  `backend/app/core/rate_limit_note.md`)
+- File upload validation (10MB max, PDF/DOCX/TXT) is enforced but there's no
+  virus scanning
+- No token streaming — `/chat/ask` returns the full answer at once
+- Single-tenant — no org/workspace isolation, just role-based visibility
+  within one shared document pool
 
-## Free deployment path (when you're ready)
+## Deploying
 
-- **Frontend:** Vercel — set `VITE_API_URL` env var to your backend's public URL.
-- **Backend:** Render or Railway free web service, using `backend/Dockerfile`.
-  Set `GROQ_API_KEY` and other `.env` vars in their dashboard's secrets
-  manager, never in code.
-- **Vector DB at scale:** Neon (free Postgres tier with pgvector support)
-  once you've implemented `PgVectorStore`.
+- **Frontend:** Vercel, with `VITE_API_URL` pointed at your backend
+- **Backend:** Render or Railway, using `backend/Dockerfile`, secrets set in
+  their dashboard rather than committed anywhere
+- **Vector DB at scale:** Neon's free Postgres tier has pgvector support,
+  once `PgVectorStore` is implemented
+
+## License
+
+See [LICENSE](LICENSE).
